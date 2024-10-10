@@ -18,7 +18,7 @@ pipeline {
     GITHUB_CREDENTIAL_ID = 'github-id'     // GitHub凭证ID
     KUBECONFIG_CREDENTIAL_ID = 'demo-kubeconfig'  // Kubernetes配置文件凭证ID
     REGISTRY = 'docker.io'                 // Docker镜像仓库地址
-    DOCKERHUB_NAMESPACE = 'laugmsile'      // Dockerhub的用户名
+    DOCKERHUB_NAMESPACE = 'laughsmile'      // Dockerhub的用户名
     GITHUB_ACCOUNT = 'LaughSmiles'         // GitHub账户名
     APP_NAME = 'devops-java-sample'        // 应用名
     SONAR_CREDENTIAL_ID = 'sonar-qube'     // SonarQube凭证ID
