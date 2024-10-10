@@ -1,3 +1,4 @@
+// 定义Pipeline
 pipeline {
   agent {
     node {
@@ -5,115 +6,129 @@ pipeline {
     }
   }
 
-    parameters {
-        string(name:'TAG_NAME',defaultValue: '',description:'')
+  // 定义参数
+  parameters {
+    // 用户输入的字符串参数
+    string(name: 'TAG_NAME', defaultValue: '', description: '指定要使用的标签')
+  }
+
+  // 定义环境变量
+  environment {
+    DOCKER_CREDENTIAL_ID = 'dockerhub-id'  // Docker凭证ID
+    GITHUB_CREDENTIAL_ID = 'github-id'     // GitHub凭证ID
+    KUBECONFIG_CREDENTIAL_ID = 'demo-kubeconfig'  // Kubernetes配置文件凭证ID
+    REGISTRY = 'docker.io'                 // Docker镜像仓库地址
+    DOCKERHUB_NAMESPACE = 'laugmsile'      // Dockerhub的用户名
+    GITHUB_ACCOUNT = 'LaughSmiles'         // GitHub账户名
+    APP_NAME = 'devops-java-sample'        // 应用名
+    SONAR_CREDENTIAL_ID = 'sonar-qube'     // SonarQube凭证ID
+  }
+
+  // 定义阶段
+  stages {
+    stage('从版本控制器中下载代码') {
+      steps {
+        checkout(scm) 
+      }
     }
 
-    environment {
-        DOCKER_CREDENTIAL_ID = 'dockerhub-id'
-        GITHUB_CREDENTIAL_ID = 'github-id'
-        KUBECONFIG_CREDENTIAL_ID = 'demo-kubeconfig'
-        REGISTRY = 'docker.io'
-        DOCKERHUB_NAMESPACE = 'laughsmile'
-        GITHUB_ACCOUNT = 'LaughSmiles'
-        APP_NAME = 'devops-java-sample'
-        SONAR_CREDENTIAL_ID= 'sonar-qube'
+    stage('单元测试') {
+      steps {
+        container('maven') {
+		  // clean 并 指定配置文件
+          sh 'mvn clean -gs `pwd`/configuration/settings.xml test' 
+        }
+      }
     }
 
-    stages {
-        stage ('checkout scm') {
-            steps {
-                checkout(scm)
-            }
-        }
-
-        stage ('unit test') {
-            steps {
-                container ('maven') {
-                    sh 'mvn clean -gs `pwd`/configuration/settings.xml test'
-                }
-            }
-        }
-
-        stage('sonarqube analysis') {
-          steps {
-            container ('maven') {
-              withCredentials([string(credentialsId: "$SONAR_CREDENTIAL_ID", variable: 'SONAR_TOKEN')]) {
-                withSonarQubeEnv('sonar') {
-                 sh "mvn sonar:sonar -gs `pwd`/configuration/settings.xml -Dsonar.branch=$BRANCH_NAME -Dsonar.login=$SONAR_TOKEN"
-                }
-              }
-              timeout(time: 1, unit: 'HOURS') {
-                waitForQualityGate abortPipeline: true
-              }
+    // 执行SonarQube分析
+    stage('代码分析') {
+      steps {
+        container('maven') {
+          withCredentials([string(credentialsId: "$SONAR_CREDENTIAL_ID", variable: 'SONAR_TOKEN')]) {
+            withSonarQubeEnv('sonar') {
+			  // 使用Maven插件执行SonarQube分析 $BRANCH_NAME为master，代码的分支
+              sh "mvn sonar:sonar -gs `pwd`/configuration/settings.xml -Dsonar.branch=$BRANCH_NAME -Dsonar.login=$SONAR_TOKEN"  
             }
           }
-        }
-
-        stage ('build & push') {
-            steps {
-                container ('maven') {
-                    sh 'mvn -Dmaven.test.skip=true -gs `pwd`/configuration/settings.xml clean package'
-                    sh 'docker build -f Dockerfile-online -t $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:SNAPSHOT-$BRANCH_NAME-$BUILD_NUMBER .'
-                    withCredentials([usernamePassword(passwordVariable : 'DOCKER_PASSWORD' ,usernameVariable : 'DOCKER_USERNAME' ,credentialsId : "$DOCKER_CREDENTIAL_ID" ,)]) {
-                        sh 'echo "$DOCKER_PASSWORD" | docker login $REGISTRY -u "$DOCKER_USERNAME" --password-stdin'
-                        sh 'docker push  $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:SNAPSHOT-$BRANCH_NAME-$BUILD_NUMBER'
-                    }
-                }
-            }
-        }
-
-        stage('push latest'){
-           when{
-             branch 'master'
-           }
-           steps{
-                container ('maven') {
-                  sh 'docker tag  $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:SNAPSHOT-$BRANCH_NAME-$BUILD_NUMBER $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:latest '
-                  sh 'docker push  $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:latest '
-                }
-           }
-        }
-
-        stage('deploy to dev') {
-          when{
-            branch 'master'
-          }
-          steps {
-            input(id: 'deploy-to-dev', message: 'deploy to dev?')
-            kubernetesDeploy(configs: 'deploy/dev-ol/**', enableConfigSubstitution: true, kubeconfigId: "$KUBECONFIG_CREDENTIAL_ID")
+          timeout(time: 1, unit: 'HOURS') {
+            waitForQualityGate abortPipeline: true  // 等待SonarQube质量门禁结果
           }
         }
-        stage('push with tag'){
-          when{
-            expression{
-              return params.TAG_NAME =~ /v.*/
-            }
-          }
-          steps {
-              container ('maven') {
-                input(id: 'release-image-with-tag', message: 'release image with tag?')
-                  withCredentials([usernamePassword(credentialsId: "$GITHUB_CREDENTIAL_ID", passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
-                    sh 'git config --global user.email "kubesphere@yunify.com" '
-                    sh 'git config --global user.name "kubesphere" '
-                    sh 'git tag -a $TAG_NAME -m "$TAG_NAME" '
-                    sh 'git push http://$GIT_USERNAME:$GIT_PASSWORD@github.com/$GITHUB_ACCOUNT/devops-java-sample.git --tags --ipv4'
-                  }
-                sh 'docker tag  $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:SNAPSHOT-$BRANCH_NAME-$BUILD_NUMBER $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:$TAG_NAME '
-                sh 'docker push  $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:$TAG_NAME '
-          }
-          }
-        }
-        stage('deploy to production') {
-          when{
-            expression{
-              return params.TAG_NAME =~ /v.*/
-            }
-          }
-          steps {
-            input(id: 'deploy-to-production', message: 'deploy to production?')
-            kubernetesDeploy(configs: 'deploy/prod-ol/**', enableConfigSubstitution: true, kubeconfigId: "$KUBECONFIG_CREDENTIAL_ID")
-          }
-        }
+      }
     }
+
+    // 构建并推送Docker镜像
+    stage('构建并推送Docker镜像') {
+      steps {
+        container('maven') {
+          sh 'mvn -Dmaven.test.skip=true -gs `pwd`/configuration/settings.xml clean package'  // 跳过测试步骤，并打包
+          sh 'docker build -f Dockerfile-online -t $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:SNAPSHOT-$BRANCH_NAME-$BUILD_NUMBER .'  // 根据docker-online文件制作容器（将jar复制到容器内部，并java -jar），-t并指定了标签
+          withCredentials([usernamePassword(passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USERNAME', credentialsId: "$DOCKER_CREDENTIAL_ID")]) {
+            sh 'echo "$DOCKER_PASSWORD" | docker login $REGISTRY -u "$DOCKER_USERNAME" --password-stdin'  // 登录Docker注册表
+            sh 'docker push $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:SNAPSHOT-$BRANCH_NAME-$BUILD_NUMBER'  // 推送构建好的镜像
+          }
+        }
+      }
+    }
+
+    // 推送最新标签
+    stage('推送最新标签') {
+      when {
+        branch 'master'  // 仅当分支是master时执行
+      }
+      steps {
+        container('maven') {
+          sh 'docker tag $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:SNAPSHOT-$BRANCH_NAME-$BUILD_NUMBER $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:latest'  // 将最新的镜像打上latest标签
+          sh 'docker push $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:latest'  // 推送latest标签的镜像
+        }
+      }
+    }
+
+    // 部署到开发环境
+    stage('部署到开发环境') {
+      when {
+        branch 'master'  // 仅当分支是master时执行
+      }
+      steps {
+        input(id: 'deploy-to-dev', message: 'deploy to dev?')  // 提示用户确认是否部署到开发环境
+        kubernetesDeploy(configs: 'deploy/dev/**', enableConfigSubstitution: true, kubeconfigId: "$KUBECONFIG_CREDENTIAL_ID")  // 使用Kubernetes插件部署到开发环境
+      }
+    }
+
+    // 打标签并推送
+    stage('push with tag') {
+      when {
+        expression {
+          return params.TAG_NAME =~ /v.*/  // 如果TAG_NAME参数匹配正则表达式/v.*/，则执行
+        }
+      }
+      steps {
+        container('maven') {
+          input(id: 'release-image-with-tag', message: 'release image with tag?')  // 提示用户确认是否发布带标签的镜像
+          withCredentials([usernamePassword(credentialsId: "$GITHUB_CREDENTIAL_ID", passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
+            sh 'git config --global user.email "kubesphere@yunify.com"'  // 设置Git全局用户名和邮箱
+            sh 'git config --global user.name "kubesphere"'
+            sh 'git tag -a $TAG_NAME -m "$TAG_NAME"'  // 创建一个新的Git标签
+            sh 'git push http://$GIT_USERNAME:$GIT_PASSWORD@github.com/$GITHUB_ACCOUNT/devops-java-sample.git --tags --ipv4'  // 推送标签到远程仓库
+          }
+          sh 'docker tag $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:SNAPSHOT-$BRANCH_NAME-$BUILD_NUMBER $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:$TAG_NAME'  // 将构建的镜像打上新标签
+          sh 'docker push $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:$TAG_NAME'  // 推送新标签的镜像
+        }
+      }
+    }
+
+    // 部署到生产环境
+    stage('deploy to production') {
+      when {
+        expression {
+          return params.TAG_NAME =~ /v.*/  // 如果TAG_NAME参数匹配正则表达式/v.*/，则执行
+        }
+      }
+      steps {
+        input(id: 'deploy-to-production', message: 'deploy to production?')  // 提示用户确认是否部署到生产环境
+        kubernetesDeploy(configs: 'deploy/prod/**', enableConfigSubstitution: true, kubeconfigId: "$KUBECONFIG_CREDENTIAL_ID")  // 使用Kubernetes插件部署到生产环境
+      }
+    }
+  }
 }
